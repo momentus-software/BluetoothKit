@@ -40,7 +40,11 @@ public protocol BKRemotePeripheralDelegate: class {
         - parameter remotePeripheral: The remote peripheral that sent the data.
         - parameter data: The data it sent.
     */
-    func remotePeripheral(remotePeripheral: BKRemotePeripheral, didSendArbitraryData data: NSData)
+    func remotePeripheral(remotePeripheral: BKRemotePeripheral, didReceiveArbitraryData data: NSData)
+    
+    func remotePeripheral(remotePeripheral: BKRemotePeripheral, willSendData data: NSData)
+    
+    func remotePeripheral(remotePeripheral: BKRemotePeripheral, didReceiveError error: NSError?)
 }
 
 public func ==(lhs: BKRemotePeripheral, rhs: BKRemotePeripheral) -> Bool {
@@ -65,6 +69,16 @@ public class BKRemotePeripheral: BKCBPeripheralDelegate, Equatable {
     public enum State {
         case Shallow, Disconnected, Connecting, Connected, Disconnecting
     }
+    
+    private var sendDataTasks = [BKCentralSendDataTask]()
+    
+    public enum Error: ErrorType {
+        case InterruptedByUnavailability(cause: BKUnavailabilityCause)
+        case CharacteristicNotFound
+        case InternalError(underlyingError: ErrorType?)
+    }
+    
+    public typealias SendDataCompletionHandler = ((data: NSData, characteristic: CBCharacteristic?, error: Error?) -> Void)
     
     // MARK: Properties
     
@@ -100,15 +114,22 @@ public class BKRemotePeripheral: BKCBPeripheralDelegate, Equatable {
     /// The unique identifier of the remote peripheral object.
     public let identifier: NSUUID
     
-    internal var peripheral: CBPeripheral?
+    public var peripheral: CBPeripheral?
     internal var configuration: BKConfiguration?
     
     private var data: NSMutableData?
     private var peripheralDelegate: BKCBPeripheralDelegateProxy!
     
+    
+    private var dataLength: Int?
+    
+    // [characteristic, true] = idle
+    private var centralCharacteristics: [CBCharacteristic: Bool]
+    
     // MARK: Initialization
     
     public init(identifier: NSUUID, peripheral: CBPeripheral?) {
+        self.centralCharacteristics = Dictionary()
         self.identifier = identifier
         self.peripheralDelegate = BKCBPeripheralDelegateProxy(delegate: self)
         self.peripheral = peripheral
@@ -142,12 +163,82 @@ public class BKRemotePeripheral: BKCBPeripheralDelegate, Equatable {
         }
     }
     
+    public func sendData(data: NSData, completionHandler: SendDataCompletionHandler) {
+        delegate?.remotePeripheral(self, willSendData: data)
+        
+        
+        guard self.centralCharacteristics.count > 0 else {
+            completionHandler(data: data, characteristic:nil, error: Error.CharacteristicNotFound)
+            return
+        }
+        
+        var maximumPayloadLength: Int = 512
+        
+        if #available(iOS 9.0, *) {
+            maximumPayloadLength = (self.peripheral?.maximumWriteValueLengthForType(CBCharacteristicWriteType.WithResponse))!
+        } else {
+            // TODO: fall back for prev version
+        }
+        
+        print("Negotiated MTU \(maximumPayloadLength)")
+        let sendDataTask = BKCentralSendDataTask(data: data, maximumPayloadLength: maximumPayloadLength, completionHandler: completionHandler)
+        
+        sendDataTasks.append(sendDataTask)
+        if sendDataTasks.count >= 1 {
+            processSendDataTasks()
+        }
+    }
+    
+    internal func allKeysForValue<K, V : Equatable>(dict: [K : V], val: V) -> [K] {
+        return dict.filter{ $0.1 == val }.map{ $0.0 }
+    }
+    
+    private func processSendDataTasks() {
+        guard sendDataTasks.count > 0 else {
+            return
+        }
+        
+        let nextTask = sendDataTasks.first!
+        
+        let idleCharacteristics = allKeysForValue(self.centralCharacteristics, val: true)
+        
+        if (idleCharacteristics.count > 0) {
+            
+            let idleCharacteristic = idleCharacteristics.first
+            
+            if nextTask.sentAllData {
+                
+                self.centralCharacteristics[idleCharacteristic!] = false
+                self.peripheral?.writeValue((self.configuration?.endOfDataMark)!, forCharacteristic:idleCharacteristic!, type: CBCharacteristicWriteType.WithResponse)
+                sendDataTasks.removeAtIndex(sendDataTasks.indexOf(nextTask)!)
+                nextTask.completionHandler?(data: nextTask.data, characteristic: idleCharacteristic!, error: nil)
+                processSendDataTasks()
+                return
+            }
+            
+            let nextPayload = nextTask.nextPayload
+            
+//            NSLog("sending \(nextTask.offset) : \(idleCharacteristic?.UUID)")
+            self.centralCharacteristics[idleCharacteristic!] = false
+            self.peripheral?.writeValue(nextPayload, forCharacteristic:idleCharacteristic!, type: CBCharacteristicWriteType.WithResponse)
+            nextTask.offset += nextPayload.length
+            
+            if idleCharacteristics.count > 1 {
+                processSendDataTasks()
+            }
+            
+        } else {
+            return
+        }
+    }
+
+    
     // MARK: Private Functions
     
     private func handleReceivedData(receivedData: NSData) {
         if receivedData.isEqualToData(configuration!.endOfDataMark) {
             if let finalData = data {
-                delegate?.remotePeripheral(self, didSendArbitraryData: finalData)
+                delegate?.remotePeripheral(self, didReceiveArbitraryData: finalData)
             }
             data = nil
             return
@@ -166,6 +257,7 @@ public class BKRemotePeripheral: BKCBPeripheralDelegate, Equatable {
     }
     
     internal func peripheral(peripheral: CBPeripheral, didDiscoverServices error: NSError?) {
+        print("didDiscoverServices", peripheral.services)
         if let services = peripheral.services {
             for service in services {
                 if service.characteristics != nil {
@@ -179,16 +271,44 @@ public class BKRemotePeripheral: BKCBPeripheralDelegate, Equatable {
     
     internal func peripheral(peripheral: CBPeripheral, didDiscoverCharacteristicsForService service: CBService, error: NSError?) {
         if service.UUID == configuration!.dataServiceUUID {
-            if let dataCharacteristic = service.characteristics?.filter({ $0.UUID == configuration!.dataServiceCharacteristicUUID }).last {
-                peripheral.setNotifyValue(true, forCharacteristic: dataCharacteristic)
+            if let dataCharacteristics = service.characteristics?.filter({ configuration!.centralServiceCharacteristicUUIDs.contains($0.UUID) || configuration!.peripheralServiceCharacteristicUUID == $0.UUID}) {
+                
+                for characteristic: CBCharacteristic in dataCharacteristics {
+                    
+                    if configuration!.centralServiceCharacteristicUUIDs.contains(characteristic.UUID) {
+                        self.centralCharacteristics[characteristic] = true
+                    }
+                    peripheral.setNotifyValue(true, forCharacteristic: characteristic)
+                }
+            }
+        }
+        else if service.UUID == configuration!.ANCSNotificationServiceUUID {
+            for characteristic: CBCharacteristic in service.characteristics! {
+                peripheral.setNotifyValue(true, forCharacteristic: characteristic)
             }
         }
         // TODO: Consider what to do with characteristics from additional services.
     }
     
+    internal func peripheral(peripheral: CBPeripheral, didWriteValueForCharacteristic characteristic: CBCharacteristic, error: NSError?) {
+        self.centralCharacteristics[characteristic] = true
+        if sendDataTasks.count > 0 {
+            processSendDataTasks()
+            if error != nil {
+                delegate?.remotePeripheral(self, didReceiveError: error)
+            }
+        }
+        else {
+
+        }
+    }
+    
     internal func peripheral(peripheral: CBPeripheral, didUpdateValueForCharacteristic characteristic: CBCharacteristic, error: NSError?) {
-        if characteristic.UUID == configuration!.dataServiceCharacteristicUUID {
+        if configuration!.peripheralServiceCharacteristicUUID == characteristic.UUID {
             handleReceivedData(characteristic.value!)
+        }
+        else {
+            print("didUpdateValueForCharacteristic::Characteristic not handled")
         }
         // TODO: Consider what to do with new values for characteristics from additional services.
     }

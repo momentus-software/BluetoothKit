@@ -41,6 +41,8 @@ public protocol BKPeripheralDelegate: class {
         - parameter remoteCentral: The remote central that disconnected.
     */
     func peripheral(peripheral: BKPeripheral, remoteCentralDidDisconnect remoteCentral: BKRemoteCentral)
+    
+    func peripheral(remoteCentralDidWrite data: NSData)
 }
 
 /**
@@ -92,13 +94,20 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
     private var peripheralManager: CBPeripheralManager!
     private let stateMachine = BKPeripheralStateMachine()
     private var peripheralManagerDelegate: BKCBPeripheralManagerDelegateProxy!
-    private var sendDataTasks = [BKSendDataTask]()
-    private var characteristicData: CBMutableCharacteristic!
+    private var sendDataTasks = [BKPeripheralSendDataTask]()
+    private var peripheralCharacteristicData: CBMutableCharacteristic!
+    private var centralCharacteristicDatas: [CBMutableCharacteristic]
+    private var ANCSServiceCharacteristicDatas: [CBMutableCharacteristic]
     private var dataService: CBMutableService!
+    private var ANCSService: CBMutableService!
+    
+    private var data: NSMutableData?
     
     // MARK: Initialization
     
     public init() {
+        self.centralCharacteristicDatas = []
+        self.ANCSServiceCharacteristicDatas = []
         peripheralManagerDelegate = BKCBPeripheralManagerDelegateProxy(delegate: self)
     }
     
@@ -131,7 +140,7 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
             completionHandler?(data: data, remoteCentral: remoteCentral, error: Error.RemoteCentralNotConnected)
             return
         }
-        let sendDataTask = BKSendDataTask(data: data, destination: remoteCentral, completionHandler: completionHandler)
+        let sendDataTask = BKPeripheralSendDataTask(data: data, destination: remoteCentral, maximumPayloadLength: remoteCentral.central.maximumUpdateValueLength, completionHandler: completionHandler)
         sendDataTasks.append(sendDataTask)
         if sendDataTasks.count == 1 {
             processSendDataTasks()
@@ -179,10 +188,38 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
         }
         if !peripheralManager.isAdvertising {
             dataService = CBMutableService(type: _configuration.dataServiceUUID, primary: true)
-            let properties: CBCharacteristicProperties = [ CBCharacteristicProperties.Read, CBCharacteristicProperties.Notify ]
-            characteristicData = CBMutableCharacteristic(type: _configuration.dataServiceCharacteristicUUID, properties: properties, value: nil, permissions: CBAttributePermissions.Readable)
-            dataService.characteristics = [ characteristicData ]
+            let writeProperties: CBCharacteristicProperties = [.Write ]
+            let readProperties: CBCharacteristicProperties = [ CBCharacteristicProperties.Read, CBCharacteristicProperties.Notify ]
+            
+            dataService.characteristics = []
+            
+            for uuid: CBUUID in _configuration.centralServiceCharacteristicUUIDs {
+                let characteristic: CBMutableCharacteristic = CBMutableCharacteristic(type: uuid, properties: writeProperties, value:nil, permissions: [.Writeable, .WriteEncryptionRequired])
+                centralCharacteristicDatas.append(characteristic)
+                dataService.characteristics?.append(characteristic)
+            }
+            
+            peripheralCharacteristicData = CBMutableCharacteristic(type: _configuration.peripheralServiceCharacteristicUUID, properties:readProperties , value: nil, permissions: [.Readable])
+            dataService.characteristics?.append(peripheralCharacteristicData)
             peripheralManager.addService(dataService)
+            
+            
+            // ANCS
+            
+            let notificationSource: CBMutableCharacteristic = CBMutableCharacteristic(type: _configuration.ANCSNotificationSourceUUID, properties: [CBCharacteristicProperties.Notify, CBCharacteristicProperties.NotifyEncryptionRequired], value: nil, permissions: [CBAttributePermissions.Readable, CBAttributePermissions.ReadEncryptionRequired])
+            let controlPoint: CBMutableCharacteristic = CBMutableCharacteristic(type: _configuration.ANCSControlPointUUID, properties: [CBCharacteristicProperties.Write, CBCharacteristicProperties.WriteWithoutResponse], value: nil, permissions: [CBAttributePermissions.Writeable, CBAttributePermissions.WriteEncryptionRequired])
+            let dataSource: CBMutableCharacteristic = CBMutableCharacteristic(type: _configuration.ANCSDataSourceUUID, properties: [CBCharacteristicProperties.Notify, CBCharacteristicProperties.NotifyEncryptionRequired], value: nil, permissions: [CBAttributePermissions.Readable, CBAttributePermissions.ReadEncryptionRequired])
+            
+            ANCSService = CBMutableService(type: _configuration.ANCSNotificationServiceUUID, primary: true)
+            ANCSService.characteristics = []
+            ANCSServiceCharacteristicDatas.append(notificationSource)
+            ANCSServiceCharacteristicDatas.append(controlPoint)
+            ANCSServiceCharacteristicDatas.append(dataSource)
+            ANCSService.characteristics?.append(notificationSource)
+            ANCSService.characteristics?.append(controlPoint)
+            ANCSService.characteristics?.append(dataSource)
+            
+            peripheralManager.addService(ANCSService)
         }
     }
     
@@ -192,7 +229,7 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
         }
         let nextTask = sendDataTasks.first!
         if nextTask.sentAllData {
-            let sentEndOfDataMark = peripheralManager.updateValue(_configuration.endOfDataMark, forCharacteristic: characteristicData, onSubscribedCentrals: [ nextTask.destination.central ])
+            let sentEndOfDataMark = peripheralManager.updateValue(_configuration.endOfDataMark, forCharacteristic: peripheralCharacteristicData, onSubscribedCentrals: [ nextTask.destination.central ])
             if (sentEndOfDataMark) {
                 sendDataTasks.removeAtIndex(sendDataTasks.indexOf(nextTask)!)
                 nextTask.completionHandler?(data: nextTask.data, remoteCentral: nextTask.destination, error: nil)
@@ -202,7 +239,7 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
             }
         }
         let nextPayload = nextTask.nextPayload
-        let sentNextPayload = peripheralManager.updateValue(nextPayload, forCharacteristic: characteristicData, onSubscribedCentrals: [ nextTask.destination.central ])
+        let sentNextPayload = peripheralManager.updateValue(nextPayload, forCharacteristic: peripheralCharacteristicData, onSubscribedCentrals: [ nextTask.destination.central ])
         if sentNextPayload {
             nextTask.offset += nextPayload.length
             processSendDataTasks()
@@ -254,10 +291,12 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
     }
     
     internal func peripheralManagerDidStartAdvertising(peripheral: CBPeripheralManager, error: NSError?) {
-
+        NSLog("")
     }
     
     internal func peripheralManager(peripheral: CBPeripheralManager, didAddService service: CBService, error: NSError?) {
+        NSLog("aaaa \(service)")
+        peripheralManager.stopAdvertising()
         if !peripheralManager.isAdvertising {
             var advertisementData: [String: AnyObject] = [ CBAdvertisementDataServiceUUIDsKey: _configuration.serviceUUIDs ]
             if let localName = _configuration.localName {
@@ -268,6 +307,8 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
     }
     
     internal func peripheralManager(peripheral: CBPeripheralManager, central: CBCentral, didSubscribeToCharacteristic characteristic: CBCharacteristic) {
+        
+        NSLog("ZZZZZZZZZZ \(characteristic.UUID)")
         let remoteCentral = BKRemoteCentral(central: central)
         connectedRemoteCentrals.append(remoteCentral)
         delegate?.peripheral(self, remoteCentralDidConnect: remoteCentral)
@@ -281,6 +322,26 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
     
     internal func peripheralManagerIsReadyToUpdateSubscribers(peripheral: CBPeripheralManager) {
         processSendDataTasks()
+    }
+    
+    internal func peripheralManager(peripheral: CBPeripheralManager, didReceiveWriteRequest: CBATTRequest, value: NSData) {
+        handleReceivedData(value)
+//        delegate?.peripheral(remoteCentralDidWrite: value)
+    }
+    
+    private func handleReceivedData(receivedData: NSData) {
+        if receivedData.isEqualToData(configuration!.endOfDataMark) {
+            if let finalData = data {
+                delegate?.peripheral(remoteCentralDidWrite: finalData)
+            }
+            data = nil
+            return
+        }
+        if let existingData = data {
+            existingData.appendData(receivedData)
+            return
+        }
+        data = NSMutableData(data: receivedData)
     }
     
 }
