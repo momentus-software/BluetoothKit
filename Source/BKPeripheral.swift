@@ -178,9 +178,9 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
             availabilityObserver.availabilityObserver?.availabilityObserver(self, availabilityDidChange: .Available)
         }
         if !peripheralManager.isAdvertising {
-            dataService = CBMutableService(type: _configuration.dataServiceUUID, primary: true)
+            dataService = CBMutableService(type: _configuration.dataServiceUUID!, primary: true)
             let properties: CBCharacteristicProperties = [ CBCharacteristicProperties.Read, CBCharacteristicProperties.Notify ]
-            characteristicData = CBMutableCharacteristic(type: _configuration.dataServiceCharacteristicUUID, properties: properties, value: nil, permissions: CBAttributePermissions.Readable)
+            characteristicData = CBMutableCharacteristic(type: _configuration.dataServiceCharacteristicUUID!, properties: properties, value: nil, permissions: CBAttributePermissions.Readable)
             dataService.characteristics = [ characteristicData ]
             peripheralManager.addService(dataService)
         }
@@ -259,7 +259,7 @@ public class BKPeripheral: BKCBPeripheralManagerDelegate, BKAvailabilityObservab
     
     internal func peripheralManager(peripheral: CBPeripheralManager, didAddService service: CBService, error: NSError?) {
         if !peripheralManager.isAdvertising {
-            var advertisementData: [String: AnyObject] = [ CBAdvertisementDataServiceUUIDsKey: _configuration.serviceUUIDs ]
+            var advertisementData: [String: AnyObject] = [ CBAdvertisementDataServiceUUIDsKey: _configuration.serviceUUIDs! ]
             if let localName = _configuration.localName {
                 advertisementData[CBAdvertisementDataLocalNameKey] = localName
             }

@@ -33,10 +33,10 @@ public class BKConfiguration {
     // MARK: Properties
     
     /// The UUID for the service used to send data. This should be unique to your applications.
-    public let dataServiceUUID: CBUUID
+    public let dataServiceUUID: CBUUID?
     
     /// The UUID for the characteristic used to send data. This should be unique to your application.
-    public var dataServiceCharacteristicUUID: CBUUID
+    public var dataServiceCharacteristicUUID: CBUUID?
     
     /// Data used to indicate that no more data is coming when communicating.
     public var endOfDataMark: NSData
@@ -44,16 +44,16 @@ public class BKConfiguration {
     /// Data used to indicate that a transfer was cancellen when communicating.
     public var dataCancelledMark: NSData
     
-    internal var serviceUUIDs: [CBUUID] {
-        let serviceUUIDs = [ dataServiceUUID ]
+    internal var serviceUUIDs: [CBUUID]? {
+        let serviceUUIDs: [CBUUID]? = dataServiceUUID != nil ? [ dataServiceUUID! ] : nil
         return serviceUUIDs
     }
     
     // MARK: Initialization
 
-    public init(dataServiceUUID: NSUUID, dataServiceCharacteristicUUID: NSUUID) {
-        self.dataServiceUUID = CBUUID(NSUUID: dataServiceUUID)
-        self.dataServiceCharacteristicUUID = CBUUID(NSUUID: dataServiceCharacteristicUUID)
+    public init(dataServiceUUID: NSUUID?, dataServiceCharacteristicUUID: NSUUID?) {
+        self.dataServiceUUID = dataServiceUUID != nil ? CBUUID(NSUUID: dataServiceUUID!) : nil
+        self.dataServiceCharacteristicUUID = dataServiceCharacteristicUUID != nil ? CBUUID(NSUUID: dataServiceCharacteristicUUID!) : nil
         endOfDataMark = "EOD".dataUsingEncoding(NSUTF8StringEncoding)!
         dataCancelledMark = "COD".dataUsingEncoding(NSUTF8StringEncoding)!
     }
@@ -61,8 +61,8 @@ public class BKConfiguration {
     // MARK Functions
     
     internal func characteristicUUIDsForServiceUUID(serviceUUID: CBUUID) -> [CBUUID] {
-        if serviceUUID == dataServiceUUID {
-            return [ dataServiceCharacteristicUUID ]
+        if dataServiceCharacteristicUUID != nil && serviceUUID == dataServiceUUID {
+            return [ dataServiceCharacteristicUUID! ]
         }
         return []
     }
