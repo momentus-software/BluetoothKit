@@ -36,15 +36,7 @@ public class BKConfiguration {
     public let dataServiceUUID: CBUUID
     
     /// The UUID for the characteristic used to send data. This should be unique to your application.
-    public var peripheralServiceCharacteristicUUID: CBUUID
-    public var centralServiceCharacteristicUUIDs: [CBUUID]
-    
-    // ANCS Notifications
-    public let ANCSNotificationServiceUUID: CBUUID = CBUUID(string: "7905F431-B5CE-4E99-A40F-4B1E122D00D0")
-    public let ANCSNotificationSourceUUID: CBUUID = CBUUID(string: "9FBF120D-6301-42D9-8C58-25E699A21DBD")
-    public let ANCSControlPointUUID: CBUUID = CBUUID(string: "69D1D8F3-45E1-49A8-9821-9BBDFDAAD9D9")
-    public let ANCSDataSourceUUID: CBUUID = CBUUID(string: "22EAC6E9-24D6-4BB5-BE44-B36ACE7C7BFB")
-    
+    public var dataServiceCharacteristicUUID: CBUUID
     
     /// Data used to indicate that no more data is coming when communicating.
     public var endOfDataMark: NSData
@@ -53,20 +45,15 @@ public class BKConfiguration {
     public var dataCancelledMark: NSData
     
     internal var serviceUUIDs: [CBUUID] {
-        let serviceUUIDs = [ dataServiceUUID, ANCSNotificationServiceUUID ]
+        let serviceUUIDs = [ dataServiceUUID ]
         return serviceUUIDs
     }
     
     // MARK: Initialization
 
-    public init(dataServiceUUID: NSUUID, centralServiceCharacteristicUUIDs: [NSUUID], peripheralServiceCharacteristicUUID: NSUUID) {
+    public init(dataServiceUUID: NSUUID, dataServiceCharacteristicUUID: NSUUID) {
         self.dataServiceUUID = CBUUID(NSUUID: dataServiceUUID)
-        self.peripheralServiceCharacteristicUUID = CBUUID(NSUUID: peripheralServiceCharacteristicUUID)
-        self.centralServiceCharacteristicUUIDs = []
-        for nsuuid: NSUUID in centralServiceCharacteristicUUIDs {
-            self.centralServiceCharacteristicUUIDs.append(CBUUID(NSUUID: nsuuid))
-        }
-
+        self.dataServiceCharacteristicUUID = CBUUID(NSUUID: dataServiceCharacteristicUUID)
         endOfDataMark = "EOD".dataUsingEncoding(NSUTF8StringEncoding)!
         dataCancelledMark = "COD".dataUsingEncoding(NSUTF8StringEncoding)!
     }
@@ -75,16 +62,7 @@ public class BKConfiguration {
     
     internal func characteristicUUIDsForServiceUUID(serviceUUID: CBUUID) -> [CBUUID] {
         if serviceUUID == dataServiceUUID {
-            var uuids: [CBUUID] = []
-            uuids.append(peripheralServiceCharacteristicUUID)
-            uuids.appendContentsOf(centralServiceCharacteristicUUIDs)
-            return uuids
-        }
-        else if serviceUUID == ANCSNotificationServiceUUID {
-            var uuids: [CBUUID] = []
-            uuids.append(ANCSNotificationSourceUUID)
-            uuids.append(ANCSControlPointUUID)
-            uuids.append(ANCSDataSourceUUID)
+            return [ dataServiceCharacteristicUUID ]
         }
         return []
     }

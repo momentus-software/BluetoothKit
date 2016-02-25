@@ -24,17 +24,21 @@
 
 import Foundation
 
-internal class BKSendDataTask {
+internal func ==(lhs: BKSendDataTask, rhs: BKSendDataTask) -> Bool {
+    return lhs.destination == rhs.destination && lhs.data.isEqualToData(rhs.data)
+}
+
+internal class BKSendDataTask: Equatable {
     
     // MARK: Properties
     
     internal let data: NSData
+    internal let destination: BKRemoteCentral
+    internal let completionHandler: ((data: NSData, remoteCentral: BKRemoteCentral, error: BKPeripheral.Error?) -> Void)?
     internal var offset = 0
-    internal let maximumPayloadLength: Int
     
-    internal init(data: NSData, maximumPayloadLength: Int) {
-        self.data = data
-        self.maximumPayloadLength = maximumPayloadLength
+    internal var maximumPayloadLength: Int {
+        return destination.central.maximumUpdateValueLength
     }
     
     internal var lengthOfRemainingData: Int {
@@ -53,4 +57,13 @@ internal class BKSendDataTask {
     internal var nextPayload: NSData {
         return data.subdataWithRange(rangeForNextPayload)
     }
+    
+    // MARK: Initialization
+    
+    internal init(data: NSData, destination: BKRemoteCentral, completionHandler: ((data: NSData, remoteCentral: BKRemoteCentral, error: BKPeripheral.Error?) -> Void)?) {
+        self.data = data
+        self.destination = destination
+        self.completionHandler = completionHandler
+    }
+    
 }
